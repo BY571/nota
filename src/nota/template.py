@@ -54,7 +54,18 @@ function updateCount() {{
             : 'Select text to annotate';
 }}
 
+// Prevent mouseup inside popup from triggering content handler
+document.getElementById('note-popup').addEventListener('mouseup', function(e) {{
+    e.stopPropagation();
+}});
+document.getElementById('note-popup').addEventListener('mousedown', function(e) {{
+    e.stopPropagation();
+}});
+
 document.getElementById('content').addEventListener('mouseup', function(e) {{
+    // Don't open popup if one is already visible
+    if (document.getElementById('note-popup').style.display === 'block') return;
+
     setTimeout(function() {{
         const selection = window.getSelection();
         const text = selection.toString().trim();
