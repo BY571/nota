@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nota"
+version = "0.1.0"
+description = "View and annotate rendered Markdown files in the browser"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "flask>=3.0",
+    "markdown>=3.5",
+]
+
+[project.scripts]
+nota = "nota.cli:main"
