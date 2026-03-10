@@ -52,6 +52,12 @@ def index():
     return render_page(filename, html_content, annotations)
 
 
+@app.route("/api/annotations", methods=["DELETE"])
+def clear_annotations():
+    _save_annotations([])
+    return jsonify({"ok": True, "count": 0})
+
+
 @app.route("/api/annotations", methods=["POST"])
 def update_annotations():
     data = request.get_json()

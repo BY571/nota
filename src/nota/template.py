@@ -19,7 +19,7 @@ def render_page(filename: str, html_content: str, annotations: list) -> str:
     <span class="status" id="status">Select text to annotate</span>
     <div>
         <button onclick="toggleSidebar()" id="sidebar-btn">Notes (<span id="count">0</span>)</button>
-        <button onclick="location.reload()">Refresh</button>
+        <button onclick="clearAndReload()">Refresh</button>
     </div>
 </div>
 
@@ -314,6 +314,10 @@ function highlightAnnotations() {{
             }}
         }}
     }});
+}}
+
+function clearAndReload() {{
+    fetch('/api/annotations', {{ method: 'DELETE' }}).then(() => location.reload());
 }}
 
 document.addEventListener('keydown', function(e) {{
