@@ -15,7 +15,7 @@ def render_page(filename: str, html_content: str, annotations: list) -> str:
 <body>
 
 <div class="toolbar">
-    <span class="title">md-annotate: {filename}</span>
+    <span class="title">nota: {filename}</span>
     <span class="status" id="status">Select text to annotate</span>
     <div>
         <button onclick="toggleSidebar()" id="sidebar-btn">Notes (<span id="count">0</span>)</button>
@@ -28,7 +28,7 @@ def render_page(filename: str, html_content: str, annotations: list) -> str:
 </div>
 
 <div id="note-popup">
-    <div class="popup-header">Add annotation</div>
+    <div class="popup-header" id="popup-header">Add annotation</div>
     <div class="selected-text" id="popup-selected"></div>
     <textarea id="popup-note" placeholder="What should be changed?"></textarea>
     <div class="popup-actions">
@@ -54,41 +54,119 @@ function updateCount() {{
             : 'Select text to annotate';
 }}
 
-// Prevent mouseup inside popup from triggering content handler
-document.getElementById('note-popup').addEventListener('mouseup', function(e) {{
-    e.stopPropagation();
-}});
-document.getElementById('note-popup').addEventListener('mousedown', function(e) {{
-    e.stopPropagation();
-}});
+// --- Popup event isolation ---
+document.getElementById('note-popup').addEventListener('mouseup', function(e) {{ e.stopPropagation(); }});
+document.getElementById('note-popup').addEventListener('mousedown', function(e) {{ e.stopPropagation(); }});
 
+// --- Text selection annotations ---
 document.getElementById('content').addEventListener('mouseup', function(e) {{
-    // Don't open popup if one is already visible
     if (document.getElementById('note-popup').style.display === 'block') return;
+    // Ignore clicks on add-note buttons and media
+    if (e.target.closest('.add-note-btn') || e.target.closest('.media-annotatable')) return;
 
     setTimeout(function() {{
         const selection = window.getSelection();
         const text = selection.toString().trim();
 
         if (text.length > 2) {{
-            pendingSelection = {{ text: text }};
-
-            const range = selection.getRangeAt(0);
-            const rect = range.getBoundingClientRect();
-            const popup = document.getElementById('note-popup');
-
-            popup.style.display = 'block';
-            popup.style.top = Math.min(rect.bottom + window.scrollY + 10, document.body.scrollHeight - 250) + 'px';
-            popup.style.left = Math.min(rect.left, window.innerWidth - 370) + 'px';
-            popup.style.position = 'absolute';
-
-            document.getElementById('popup-selected').textContent =
-                text.length > 150 ? text.substring(0, 150) + '...' : text;
-            document.getElementById('popup-note').value = '';
-            document.getElementById('popup-note').focus();
+            pendingSelection = {{ text: text, type: 'text' }};
+            showPopup(
+                selection.getRangeAt(0).getBoundingClientRect(),
+                'Annotate selected text',
+                text.length > 150 ? text.substring(0, 150) + '...' : text
+            );
         }}
     }}, 10);
 }});
+
+// --- Block-level "+" buttons ---
+function initBlockButtons() {{
+    const blocks = document.querySelectorAll('#content > p, #content > h1, #content > h2, #content > h3, #content > h4, #content > h5, #content > h6, #content > blockquote, #content > pre, #content > table, #content > ul, #content > ol');
+
+    blocks.forEach((block, idx) => {{
+        block.style.position = 'relative';
+        block.dataset.blockIdx = idx;
+
+        const btn = document.createElement('button');
+        btn.className = 'add-note-btn';
+        btn.textContent = '+';
+        btn.title = 'Add note after this element';
+        btn.addEventListener('click', function(e) {{
+            e.stopPropagation();
+            if (document.getElementById('note-popup').style.display === 'block') {{ closePopup(); return; }}
+
+            const blockText = block.textContent.trim();
+            const preview = blockText.length > 80 ? blockText.substring(0, 80) + '...' : blockText;
+            const tag = block.tagName.toLowerCase();
+
+            pendingSelection = {{
+                text: '[after: ' + tag + '] ' + preview,
+                type: 'block',
+                blockTag: tag,
+                blockIdx: idx,
+            }};
+            showPopup(
+                block.getBoundingClientRect(),
+                'Add note after this ' + tag,
+                preview || '(empty block)'
+            );
+        }});
+
+        block.appendChild(btn);
+    }});
+}}
+
+// --- Media annotations (images, gifs, videos) ---
+function initMediaAnnotations() {{
+    const mediaEls = document.querySelectorAll('#content img, #content video');
+
+    mediaEls.forEach((el) => {{
+        const wrapper = document.createElement('div');
+        wrapper.className = 'media-annotatable';
+        el.parentNode.insertBefore(wrapper, el);
+        wrapper.appendChild(el);
+
+        const overlay = document.createElement('div');
+        overlay.className = 'media-overlay';
+        overlay.innerHTML = '<span class="media-note-btn">+ Add note</span>';
+        wrapper.appendChild(overlay);
+
+        overlay.addEventListener('click', function(e) {{
+            e.stopPropagation();
+            if (document.getElementById('note-popup').style.display === 'block') {{ closePopup(); return; }}
+
+            const src = el.getAttribute('src') || '';
+            const alt = el.getAttribute('alt') || '';
+            const label = alt || src.split('/').pop();
+
+            pendingSelection = {{
+                text: '[media] ' + label,
+                type: 'media',
+                src: src,
+                alt: alt,
+            }};
+            showPopup(
+                wrapper.getBoundingClientRect(),
+                'Annotate image/media',
+                label
+            );
+        }});
+    }});
+}}
+
+// --- Shared popup logic ---
+function showPopup(rect, header, previewText) {{
+    const popup = document.getElementById('note-popup');
+    popup.style.display = 'block';
+    popup.style.position = 'absolute';
+    popup.style.top = Math.min(rect.bottom + window.scrollY + 10, document.body.scrollHeight - 250) + 'px';
+    popup.style.left = Math.min(rect.left, window.innerWidth - 370) + 'px';
+
+    document.getElementById('popup-header').textContent = header;
+    document.getElementById('popup-selected').textContent = previewText;
+    document.getElementById('popup-note').value = '';
+    document.getElementById('popup-note').focus();
+}}
 
 function closePopup() {{
     document.getElementById('note-popup').style.display = 'none';
@@ -102,6 +180,7 @@ function saveAnnotation() {{
     const note = document.getElementById('popup-note').value.trim();
     annotations.push({{
         text: pendingSelection.text,
+        type: pendingSelection.type || 'text',
         note: note || '(no note)',
         timestamp: new Date().toISOString(),
     }});
@@ -143,22 +222,24 @@ function renderSidebar() {{
         list.innerHTML = '<p style="color:#8b949e;font-size:13px;">No annotations yet. Select text to add one.</p>';
         return;
     }}
-    list.innerHTML = annotations.map((a, i) => `
+    list.innerHTML = annotations.map((a, i) => {{
+        const typeIcon = a.type === 'media' ? '🖼' : a.type === 'block' ? '¶' : '✎';
+        return `
         <div class="annotation-card" onclick="scrollToAnnotation(${{i}})">
             <span class="delete-btn" onclick="event.stopPropagation(); deleteAnnotation(${{i}})">delete</span>
-            <span class="idx">#${{i + 1}}</span>
+            <span class="idx">${{typeIcon}} #${{i + 1}}</span>
             <span class="highlighted">${{escapeHtml(truncate(a.text, 100))}}</span>
             <div class="note">${{escapeHtml(a.note)}}</div>
-        </div>
-    `).join('');
+        </div>`;
+    }}).join('');
 }}
 
 function scrollToAnnotation(idx) {{
-    const els = document.querySelectorAll('.annotated-text');
+    const els = document.querySelectorAll('.annotated-text, .annotated-block, .annotated-media');
     if (els[idx]) {{
         els[idx].scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-        els[idx].style.background = '#ffc107';
-        setTimeout(() => els[idx].style.background = '#fff3cd', 1500);
+        els[idx].classList.add('flash');
+        setTimeout(() => els[idx].classList.remove('flash'), 1500);
     }}
 }}
 
@@ -171,46 +252,65 @@ function escapeHtml(text) {{
 }}
 
 function highlightAnnotations() {{
-    // Remove existing highlights
+    // Remove old text highlights
     document.querySelectorAll('.annotated-text, .annotation-indicator').forEach(el => {{
-        if (el.classList.contains('annotation-indicator')) {{
-            el.remove();
-        }} else {{
-            el.replaceWith(...el.childNodes);
-        }}
+        if (el.classList.contains('annotation-indicator')) el.remove();
+        else el.replaceWith(...el.childNodes);
+    }});
+    // Remove old block/media highlights
+    document.querySelectorAll('.annotated-block, .annotated-media').forEach(el => {{
+        el.classList.remove('annotated-block', 'annotated-media');
     }});
 
     const content = document.getElementById('content');
 
     annotations.forEach((annotation, idx) => {{
-        const searchText = annotation.text.substring(0, 200);
-        const treeWalker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+        if (annotation.type === 'media') {{
+            // Find media by src
+            const src = annotation.src || '';
+            const el = content.querySelector(`img[src="${{src}}"], video[src="${{src}}"]`);
+            if (el) {{
+                const wrapper = el.closest('.media-annotatable') || el;
+                wrapper.classList.add('annotated-media');
+            }}
+        }} else if (annotation.type === 'block') {{
+            // Find block by index
+            const blocks = content.querySelectorAll(':scope > p, :scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6, :scope > blockquote, :scope > pre, :scope > table, :scope > ul, :scope > ol');
+            const blockIdx = annotation.blockIdx;
+            if (blockIdx !== undefined && blocks[blockIdx]) {{
+                blocks[blockIdx].classList.add('annotated-block');
+            }}
+        }} else {{
+            // Text highlight
+            const searchText = annotation.text.substring(0, 200);
+            const treeWalker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
 
-        let node;
-        while (node = treeWalker.nextNode()) {{
-            const pos = node.textContent.indexOf(searchText);
-            if (pos !== -1) {{
-                const range = document.createRange();
-                range.setStart(node, pos);
-                range.setEnd(node, Math.min(pos + searchText.length, node.textContent.length));
+            let node;
+            while (node = treeWalker.nextNode()) {{
+                const pos = node.textContent.indexOf(searchText);
+                if (pos !== -1) {{
+                    const range = document.createRange();
+                    range.setStart(node, pos);
+                    range.setEnd(node, Math.min(pos + searchText.length, node.textContent.length));
 
-                const wrapper = document.createElement('span');
-                wrapper.className = 'annotated-text';
-                wrapper.title = annotation.note;
-                wrapper.onclick = function() {{
-                    if (!document.getElementById('sidebar').classList.contains('open')) toggleSidebar();
-                }};
+                    const wrapper = document.createElement('span');
+                    wrapper.className = 'annotated-text';
+                    wrapper.title = annotation.note;
+                    wrapper.onclick = function() {{
+                        if (!document.getElementById('sidebar').classList.contains('open')) toggleSidebar();
+                    }};
 
-                try {{
-                    range.surroundContents(wrapper);
-                    const badge = document.createElement('span');
-                    badge.className = 'annotation-indicator';
-                    badge.textContent = idx + 1;
-                    badge.title = annotation.note;
-                    wrapper.after(badge);
-                }} catch(e) {{}}
+                    try {{
+                        range.surroundContents(wrapper);
+                        const badge = document.createElement('span');
+                        badge.className = 'annotation-indicator';
+                        badge.textContent = idx + 1;
+                        badge.title = annotation.note;
+                        wrapper.after(badge);
+                    }} catch(e) {{}}
 
-                break;
+                    break;
+                }}
             }}
         }}
     }});
@@ -225,6 +325,8 @@ document.addEventListener('keydown', function(e) {{
 }});
 
 updateCount();
+initBlockButtons();
+initMediaAnnotations();
 highlightAnnotations();
 </script>
 </body>
@@ -298,6 +400,7 @@ body {
 #content blockquote { padding: 0 16px; color: #57606a; border-left: 4px solid #d0d7de; margin: 16px 0; }
 #content ul, #content ol { padding-left: 2em; margin: 16px 0; }
 
+/* Text selection highlights */
 .annotated-text {
     background: #fff3cd;
     border-bottom: 2px solid #f0ad4e;
@@ -306,8 +409,8 @@ body {
     border-radius: 2px;
     transition: background 0.3s;
 }
-
 .annotated-text:hover { background: #ffe69c; }
+.annotated-text.flash { background: #ffc107; }
 
 .annotation-indicator {
     display: inline-block;
@@ -324,6 +427,75 @@ body {
     cursor: pointer;
 }
 
+/* Block-level "+" button */
+.add-note-btn {
+    position: absolute;
+    right: -32px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 1px solid #d0d7de;
+    background: white;
+    color: #57606a;
+    font-size: 16px;
+    line-height: 22px;
+    text-align: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s;
+    padding: 0;
+}
+
+*:hover > .add-note-btn { opacity: 1; }
+.add-note-btn:hover { background: #0969da; color: white; border-color: #0969da; }
+
+/* Block annotation highlight */
+.annotated-block {
+    border-left: 3px solid #f0ad4e !important;
+    background: #fffdf5 !important;
+    padding-left: 12px !important;
+}
+.annotated-block.flash { background: #fff3cd !important; }
+
+/* Media annotation support */
+.media-annotatable {
+    position: relative;
+    display: inline-block;
+}
+
+.media-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: 8px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.media-annotatable:hover .media-overlay { opacity: 1; }
+
+.media-note-btn {
+    background: rgba(9, 105, 218, 0.9);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+.media-note-btn:hover { background: rgba(9, 105, 218, 1); }
+
+.annotated-media {
+    outline: 3px solid #f0ad4e;
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+.annotated-media.flash { outline-color: #ffc107; }
+
+/* Popup */
 #note-popup {
     display: none;
     position: absolute;
@@ -362,7 +534,6 @@ body {
 }
 
 #note-popup textarea:focus { outline: none; border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,0.15); }
-
 #note-popup .popup-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 #note-popup .popup-actions button {
@@ -377,6 +548,7 @@ body {
 #note-popup .btn-save:hover { background: #0860ca; }
 #note-popup .btn-cancel { background: white; color: #24292e; border: 1px solid #d0d7de; }
 
+/* Sidebar */
 #sidebar {
     position: fixed;
     top: 44px; right: 0;
@@ -404,7 +576,6 @@ body {
 }
 
 .annotation-card:hover { border-color: #0969da; }
-
 .annotation-card .idx { font-weight: 700; color: #f0ad4e; font-size: 11px; }
 
 .annotation-card .highlighted {
