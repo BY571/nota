@@ -3,5 +3,6 @@ __pycache__/
 dist/
 build/
 *.pyc
-.nota.json
-
+.venv/
+*.nota.json
+*.nota.base

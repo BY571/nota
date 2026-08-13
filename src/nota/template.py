@@ -18,6 +18,7 @@ def render_page(filename: str, html_content: str, annotations: list) -> str:
     <span class="title">nota: {filename}</span>
     <span class="status" id="status">Select text to annotate</span>
     <div>
+        <button onclick="toggleChanges()" id="changes-btn" class="btn-changes">Changes (<span id="diff-count">0</span>)</button>
         <button onclick="toggleSidebar()" id="sidebar-btn">Notes (<span id="count">0</span>)</button>
         <button onclick="clearAndReload()">Refresh</button>
     </div>
@@ -25,6 +26,17 @@ def render_page(filename: str, html_content: str, annotations: list) -> str:
 
 <div class="container">
     <div id="content">{html_content}</div>
+
+    <div id="diff-view">
+        <div class="diff-bar">
+            <span id="diff-summary">No changes since the baseline</span>
+            <div>
+                <button class="btn-reject-all" onclick="resolveAll('reject')">Reject all</button>
+                <button class="btn-accept-all" onclick="resolveAll('accept')">Accept all</button>
+            </div>
+        </div>
+        <div id="diff-body"></div>
+    </div>
 </div>
 
 <div id="note-popup">
@@ -316,6 +328,98 @@ function highlightAnnotations() {{
     }});
 }}
 
+// --- Change review (PR-style diff against the baseline snapshot) ---
+let diffMode = false;
+let lastMtime = null;
+
+function toggleChanges() {{
+    diffMode = !diffMode;
+    history.replaceState(null, '', diffMode ? '#changes' : location.pathname);
+    document.getElementById('diff-view').classList.toggle('open', diffMode);
+    document.getElementById('content').style.display = diffMode ? 'none' : 'block';
+    document.getElementById('changes-btn').classList.toggle('active', diffMode);
+    if (diffMode) loadDiff();
+}}
+
+function loadDiff() {{
+    fetch('/api/diff').then(r => r.json()).then(data => {{
+        lastMtime = data.mtime;
+        updateDiffCount(data.count);
+        renderDiff(data);
+    }});
+}}
+
+function updateDiffCount(count) {{
+    document.getElementById('diff-count').textContent = count;
+    document.getElementById('changes-btn').classList.toggle('has-changes', count > 0);
+    document.getElementById('diff-summary').textContent =
+        count > 0
+            ? count + ' change' + (count === 1 ? '' : 's') + ' since the baseline'
+            : 'No changes since the baseline';
+}}
+
+function renderDiff(data) {{
+    const body = document.getElementById('diff-body');
+
+    if (data.count === 0) {{
+        body.innerHTML = '<div class="diff-empty">Nothing changed yet.<br>' +
+            'Edits made to the file after nota started show up here as reviewable chunks.</div>';
+        return;
+    }}
+
+    body.innerHTML = data.segments.map(seg => {{
+        if (seg.type === 'equal') {{
+            return '<div class="seg-equal">' + seg.html + '</div>';
+        }}
+        const n = seg.idx + 1;
+        const label = !seg.old_html ? 'Added' : !seg.new_html ? 'Removed' : 'Changed';
+        let sides = '';
+        if (seg.old_html) {{
+            sides += '<div class="side side-old"><span class="side-tag">− before</span>' + seg.old_html + '</div>';
+        }}
+        if (seg.new_html) {{
+            sides += '<div class="side side-new"><span class="side-tag">+ after</span>' + seg.new_html + '</div>';
+        }}
+        return `
+        <div class="hunk" id="hunk-${{seg.idx}}">
+            <div class="hunk-bar">
+                <span class="hunk-label">${{label}} · chunk ${{n}}</span>
+                <span>
+                    <button class="btn-reject" onclick="resolveHunk(${{seg.idx}}, 'reject')">Reject</button>
+                    <button class="btn-accept" onclick="resolveHunk(${{seg.idx}}, 'accept')">Accept</button>
+                </span>
+            </div>
+            ${{sides}}
+        </div>`;
+    }}).join('');
+}}
+
+function resolveHunk(idx, action) {{
+    const el = document.getElementById('hunk-' + idx);
+    if (el) el.classList.add('resolving');
+    fetch('/api/diff/' + idx + '/' + action, {{ method: 'POST' }})
+        .then(r => r.json())
+        .then(() => loadDiff());
+}}
+
+function resolveAll(action) {{
+    const count = parseInt(document.getElementById('diff-count').textContent, 10);
+    if (count === 0) return;
+    const verb = action === 'accept' ? 'Accept' : 'Reject';
+    if (!confirm(verb + ' all ' + count + ' change(s)?')) return;
+    fetch('/api/diff/' + action + '_all', {{ method: 'POST' }})
+        .then(r => r.json())
+        .then(() => loadDiff());
+}}
+
+// Pick up edits made by an agent while the page is open.
+setInterval(function() {{
+    fetch('/api/diff/status').then(r => r.json()).then(data => {{
+        updateDiffCount(data.count);
+        if (diffMode && data.mtime !== lastMtime) loadDiff();
+    }}).catch(() => {{}});
+}}, 3000);
+
 function clearAndReload() {{
     fetch('/api/annotations', {{ method: 'DELETE' }}).then(() => location.reload());
 }}
@@ -332,6 +436,8 @@ updateCount();
 initBlockButtons();
 initMediaAnnotations();
 highlightAnnotations();
+fetch('/api/diff/status').then(r => r.json()).then(d => updateDiffCount(d.count));
+if (location.hash === '#changes') toggleChanges();
 </script>
 </body>
 </html>"""
@@ -391,18 +497,18 @@ body {
     margin-top: 50px;
 }
 
-#content h1 { font-size: 2em; margin: 0.67em 0; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
-#content h2 { font-size: 1.5em; margin: 1em 0 0.5em; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
-#content h3 { font-size: 1.25em; margin: 1em 0 0.5em; }
-#content p { margin: 0 0 16px; }
-#content img { max-width: 100%; }
-#content table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-#content th, #content td { border: 1px solid #d0d7de; padding: 8px 13px; text-align: left; }
-#content th { background: #f6f8fa; font-weight: 600; }
-#content pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; margin: 16px 0; }
-#content code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 85%; }
-#content blockquote { padding: 0 16px; color: #57606a; border-left: 4px solid #d0d7de; margin: 16px 0; }
-#content ul, #content ol { padding-left: 2em; margin: 16px 0; }
+#content h1, #diff-body h1 { font-size: 2em; margin: 0.67em 0; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
+#content h2, #diff-body h2 { font-size: 1.5em; margin: 1em 0 0.5em; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
+#content h3, #diff-body h3 { font-size: 1.25em; margin: 1em 0 0.5em; }
+#content p, #diff-body p { margin: 0 0 16px; }
+#content img, #diff-body img { max-width: 100%; }
+#content table, #diff-body table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+#content th, #content td, #diff-body th, #diff-body td { border: 1px solid #d0d7de; padding: 8px 13px; text-align: left; }
+#content th, #diff-body th { background: #f6f8fa; font-weight: 600; }
+#content pre, #diff-body pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; margin: 16px 0; }
+#content code, #diff-body code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 85%; }
+#content blockquote, #diff-body blockquote { padding: 0 16px; color: #57606a; border-left: 4px solid #d0d7de; margin: 16px 0; }
+#content ul, #content ol, #diff-body ul, #diff-body ol { padding-left: 2em; margin: 16px 0; }
 
 /* Text selection highlights */
 .annotated-text {
@@ -498,6 +604,123 @@ body {
     border-radius: 4px;
 }
 .annotated-media.flash { outline-color: #ffc107; }
+
+/* --- Change review view --- */
+.toolbar .btn-changes { background: #30363d; }
+.toolbar .btn-changes:hover { background: #444c56; }
+.toolbar .btn-changes.has-changes { background: #9a6700; }
+.toolbar .btn-changes.has-changes:hover { background: #bb8009; }
+.toolbar .btn-changes.active { background: #0969da; }
+
+#diff-view { display: none; margin-top: 50px; }
+#diff-view.open { display: block; }
+
+.diff-bar {
+    position: sticky;
+    top: 44px;
+    z-index: 500;
+    background: white;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: #57606a;
+}
+
+.diff-bar button {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    margin-left: 6px;
+    background: white;
+}
+
+.diff-bar .btn-accept-all { background: #1a7f37; border-color: #1a7f37; color: white; }
+.diff-bar .btn-accept-all:hover { background: #1c8139; }
+.diff-bar .btn-reject-all { color: #cf222e; }
+.diff-bar .btn-reject-all:hover { background: #ffebe9; border-color: #cf222e; }
+
+#diff-body {
+    background: white;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 45px;
+}
+
+.diff-empty { color: #8b949e; font-size: 14px; text-align: center; padding: 40px 0; line-height: 1.8; }
+
+.seg-equal { color: #57606a; }
+.seg-equal > *:first-child { margin-top: 0; }
+
+.hunk {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    margin: 20px 0;
+    overflow: hidden;
+    transition: opacity 0.2s;
+}
+
+.hunk.resolving { opacity: 0.4; }
+
+.hunk-bar {
+    background: #f6f8fa;
+    border-bottom: 1px solid #d0d7de;
+    padding: 6px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.hunk-label { font-size: 11px; font-weight: 700; color: #57606a; text-transform: uppercase; letter-spacing: 0.04em; }
+
+.hunk-bar button {
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    margin-left: 6px;
+    border: 1px solid #d0d7de;
+    background: white;
+}
+
+.hunk-bar .btn-accept { background: #1a7f37; border-color: #1a7f37; color: white; }
+.hunk-bar .btn-accept:hover { background: #1c8139; }
+.hunk-bar .btn-reject { color: #cf222e; }
+.hunk-bar .btn-reject:hover { background: #ffebe9; border-color: #cf222e; }
+
+.side { position: relative; padding: 14px 18px 14px 20px; }
+.side > *:first-child { margin-top: 0; }
+.side > *:last-child { margin-bottom: 0; }
+
+.side-old { background: #fff5f5; border-left: 4px solid #cf222e; }
+.side-new { background: #f2fbf4; border-left: 4px solid #1a7f37; }
+.side-old + .side-new { border-top: 1px solid #d0d7de; }
+
+.side-old h1, .side-old h2 { border-bottom-color: #ffcecb; }
+.side-new h1, .side-new h2 { border-bottom-color: #b7e2c1; }
+.side-old pre { background: #ffebe9; }
+.side-new pre { background: #e4f7e9; }
+
+.side-tag {
+    display: block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+
+.side-old .side-tag { color: #cf222e; }
+.side-new .side-tag { color: #1a7f37; }
 
 /* Popup */
 #note-popup {

@@ -6,6 +6,7 @@ import os
 import markdown
 from flask import Flask, jsonify, request, send_from_directory
 
+from nota import diff
 from nota.template import render_page
 
 app = Flask(__name__)
@@ -15,13 +16,15 @@ _state = {
     "md_file": None,
     "annotations_file": None,
     "md_dir": None,
+    "base_file": None,
 }
 
 
-def configure(md_file: str):
+def configure(md_file: str, reset_base: bool = False):
     _state["md_file"] = os.path.abspath(md_file)
     _state["md_dir"] = os.path.dirname(_state["md_file"])
     _state["annotations_file"] = _state["md_file"] + ".nota.json"
+    _state["base_file"] = diff.ensure_baseline(_state["md_file"], reset=reset_base)
 
 
 def _load_annotations():
@@ -37,15 +40,19 @@ def _save_annotations(annotations):
         json.dump(annotations, f, indent=2)
 
 
+def _render_md(md_content: str) -> str:
+    return markdown.markdown(
+        md_content,
+        extensions=["tables", "fenced_code", "codehilite", "toc"],
+    )
+
+
 @app.route("/")
 def index():
     with open(_state["md_file"]) as f:
         md_content = f.read()
 
-    html_content = markdown.markdown(
-        md_content,
-        extensions=["tables", "fenced_code", "codehilite", "toc"],
-    )
+    html_content = _render_md(md_content)
     annotations = _load_annotations()
     filename = os.path.basename(_state["md_file"])
 
@@ -68,6 +75,67 @@ def update_annotations():
 @app.route("/api/annotations", methods=["GET"])
 def get_annotations():
     return jsonify(_load_annotations())
+
+
+def _diff_state():
+    base_lines = diff.read_lines(_state["base_file"])
+    cur_lines = diff.read_lines(_state["md_file"])
+    return base_lines, cur_lines, diff.compute_hunks(base_lines, cur_lines)
+
+
+@app.route("/api/diff", methods=["GET"])
+def get_diff():
+    """The full document with changed blocks rendered as before/after pairs."""
+    base_lines, cur_lines, hunks = _diff_state()
+    segments = diff.build_segments(base_lines, cur_lines, hunks)
+
+    out = []
+    for seg in segments:
+        if seg["type"] == "equal":
+            out.append({"type": "equal", "html": _render_md("\n".join(seg["lines"]))})
+        else:
+            out.append({
+                "type": "hunk",
+                "idx": seg["idx"],
+                "old_html": _render_md("\n".join(seg["old"])) if seg["old"] else "",
+                "new_html": _render_md("\n".join(seg["new"])) if seg["new"] else "",
+            })
+
+    return jsonify({
+        "count": len(hunks),
+        "mtime": os.path.getmtime(_state["md_file"]),
+        "segments": out,
+    })
+
+
+@app.route("/api/diff/status", methods=["GET"])
+def diff_status():
+    _, _, hunks = _diff_state()
+    return jsonify({"count": len(hunks), "mtime": os.path.getmtime(_state["md_file"])})
+
+
+@app.route("/api/diff/<int:idx>/<action>", methods=["POST"])
+def resolve_hunk(idx, action):
+    if action == "accept":
+        ok = diff.accept_hunk(_state["md_file"], idx)
+    elif action == "reject":
+        ok = diff.reject_hunk(_state["md_file"], idx)
+    else:
+        return jsonify({"ok": False, "error": "unknown action"}), 400
+
+    _, _, hunks = _diff_state()
+    return jsonify({"ok": ok, "count": len(hunks)})
+
+
+@app.route("/api/diff/<action>_all", methods=["POST"])
+def resolve_all(action):
+    if action == "accept":
+        diff.accept_all(_state["md_file"])
+    elif action == "reject":
+        diff.reject_all(_state["md_file"])
+    else:
+        return jsonify({"ok": False, "error": "unknown action"}), 400
+    return jsonify({"ok": True, "count": 0})
 
 
 @app.route("/videos/<path:filename>")
