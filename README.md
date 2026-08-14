@@ -33,7 +33,15 @@ Each chunk has its own buttons:
 
 - **Accept** keeps the new version and moves the baseline forward. Your file is not touched.
 - **Reject** puts the old version back into the file.
+- **Comment** leaves a note on that chunk for the times when the change is close but not
+  quite right. The chunk stays pending, and the note goes into `<file>.nota.json` together
+  with the before and after text, so Claude knows exactly which change you mean.
+- **Accept & comment** (in the comment box) keeps the change and still records the note —
+  for "fine for now, but follow up on this".
 - **Accept all** / **Reject all** resolve everything at once.
+
+Comments stick to their chunk by content, not by position, so they stay put while you
+accept or reject the chunks around them.
 
 The view polls the file, so changes an agent makes while the page is open appear on their own.
 `--reset-base` re-snapshots the baseline and drops all pending changes.
@@ -43,4 +51,5 @@ The view polls the file, so changes an agent makes while the page is open appear
 1. `nota Report.md` - review and annotate
 2. Tell Claude: "review the nota" or "read Report.md.nota.json and process all notes"
 3. Claude reads your annotations and makes the changes
-4. Hit **Changes** to see exactly what Claude rewrote, and accept or reject each chunk
+4. Hit **Changes** to see exactly what Claude rewrote, and accept, reject, or comment on each chunk
+5. Tell Claude "review the nota" again - it picks up the comments on the chunks and revises them

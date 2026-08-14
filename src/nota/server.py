@@ -1,5 +1,6 @@
 """Flask server that renders markdown with annotation support."""
 
+import hashlib
 import json
 import os
 
@@ -77,6 +78,11 @@ def get_annotations():
     return jsonify(_load_annotations())
 
 
+def _hunk_key(old_text: str, new_text: str) -> str:
+    digest = hashlib.sha1((old_text + "\x00" + new_text).encode("utf-8"))
+    return digest.hexdigest()[:12]
+
+
 def _diff_state():
     base_lines = diff.read_lines(_state["base_file"])
     cur_lines = diff.read_lines(_state["md_file"])
@@ -94,11 +100,18 @@ def get_diff():
         if seg["type"] == "equal":
             out.append({"type": "equal", "html": _render_md("\n".join(seg["lines"]))})
         else:
+            old_text = "\n".join(seg["old"]).strip()
+            new_text = "\n".join(seg["new"]).strip()
             out.append({
                 "type": "hunk",
                 "idx": seg["idx"],
+                # Chunks get renumbered as others are resolved, so comments anchor to
+                # the content itself rather than to a position.
+                "key": _hunk_key(old_text, new_text),
                 "old_html": _render_md("\n".join(seg["old"])) if seg["old"] else "",
                 "new_html": _render_md("\n".join(seg["new"])) if seg["new"] else "",
+                "old_text": old_text[:600],
+                "new_text": new_text[:600],
             })
 
     return jsonify({
