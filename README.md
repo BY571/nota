@@ -21,8 +21,26 @@ nota docs/Report.md --port 8080
 
 Select any text to highlight it and add a note. Annotations are saved to `<file>.nota.json` (e.g. `Report.md.nota.json`).
 
+## Reviewing agent changes
+
+The **Changes** button turns nota into a pull request for your markdown. When nota starts it
+snapshots the file to `<file>.nota.base` — that snapshot is the "before" version. Everything
+written to the file afterwards (by Claude Code, by your editor, by anything) shows up as
+reviewable chunks, rendered rather than raw: the old version of each chunk in red, the new one
+in green, with the untouched parts of the document in between for context.
+
+Each chunk has its own buttons:
+
+- **Accept** keeps the new version and moves the baseline forward. Your file is not touched.
+- **Reject** puts the old version back into the file.
+- **Accept all** / **Reject all** resolve everything at once.
+
+The view polls the file, so changes an agent makes while the page is open appear on their own.
+`--reset-base` re-snapshots the baseline and drops all pending changes.
+
 ## Workflow with [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 
 1. `nota Report.md` - review and annotate
 2. Tell Claude: "review the nota" or "read Report.md.nota.json and process all notes"
 3. Claude reads your annotations and makes the changes
+4. Hit **Changes** to see exactly what Claude rewrote, and accept or reject each chunk

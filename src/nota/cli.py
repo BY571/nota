@@ -17,6 +17,11 @@ def main():
     parser.add_argument("file", help="Markdown file to annotate")
     parser.add_argument("--port", type=int, default=5050, help="Port (default: 5050)")
     parser.add_argument("--no-open", action="store_true", help="Don't open browser automatically")
+    parser.add_argument(
+        "--reset-base",
+        action="store_true",
+        help="Re-snapshot the baseline, discarding pending changes in the review view",
+    )
     args = parser.parse_args()
 
     md_file = os.path.abspath(args.file)
@@ -24,13 +29,14 @@ def main():
         print(f"File not found: {md_file}")
         sys.exit(1)
 
-    configure(md_file)
+    configure(md_file, reset_base=args.reset_base)
 
     print(f"  File: {md_file}")
     print(f"  Annotations: {md_file}.nota.json")
+    print(f"  Baseline: {md_file}.nota.base")
     print(f"  URL: http://localhost:{args.port}")
     print()
-    print("  Select text to annotate. Ctrl+C to quit.")
+    print("  Select text to annotate. 'Changes' shows edits since the baseline. Ctrl+C to quit.")
 
     if not args.no_open:
         Timer(1.0, lambda: webbrowser.open(f"http://localhost:{args.port}")).start()
