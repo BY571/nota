@@ -45,6 +45,7 @@ def render_page(filename: str, html_content: str, annotations: list) -> str:
     <textarea id="popup-note" placeholder="What should be changed?"></textarea>
     <div class="popup-actions">
         <button class="btn-cancel" onclick="closePopup()">Cancel</button>
+        <button class="btn-save-accept" id="popup-accept" onclick="saveAnnotation(true)">Accept &amp; comment</button>
         <button class="btn-save" onclick="saveAnnotation()">Save (Ctrl+Enter)</button>
     </div>
 </div>
@@ -169,6 +170,7 @@ function initMediaAnnotations() {{
 // --- Shared popup logic ---
 function showPopup(rect, header, previewText) {{
     const popup = document.getElementById('note-popup');
+    document.getElementById('popup-accept').style.display = 'none';
     popup.style.display = 'block';
     popup.style.position = 'absolute';
     popup.style.top = Math.min(rect.bottom + window.scrollY + 10, document.body.scrollHeight - 250) + 'px';
@@ -186,16 +188,26 @@ function closePopup() {{
     window.getSelection().removeAllRanges();
 }}
 
-function saveAnnotation() {{
+function saveAnnotation(alsoAccept) {{
     if (!pendingSelection) return;
 
     const note = document.getElementById('popup-note').value.trim();
-    annotations.push({{
+    const entry = {{
         text: pendingSelection.text,
         type: pendingSelection.type || 'text',
         note: note || '(no note)',
         timestamp: new Date().toISOString(),
-    }});
+    }};
+    if (entry.type === 'change') {{
+        entry.chunkKey = pendingSelection.chunkKey;
+        entry.before = pendingSelection.before;
+        entry.after = pendingSelection.after;
+        entry.resolution = alsoAccept ? 'accepted' : 'pending';
+    }}
+    annotations.push(entry);
+
+    const wasChange = entry.type === 'change';
+    const chunkIdx = pendingSelection.chunkIdx;
 
     fetch('/api/annotations', {{
         method: 'POST',
@@ -206,6 +218,23 @@ function saveAnnotation() {{
         renderSidebar();
         highlightAnnotations();
         closePopup();
+        if (wasChange) {{
+            if (alsoAccept) resolveHunk(chunkIdx, 'accept');
+            else loadDiff();
+        }}
+    }});
+}}
+
+function deleteComment(idx) {{
+    annotations.splice(idx, 1);
+    fetch('/api/annotations', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(annotations),
+    }}).then(() => {{
+        updateCount();
+        renderSidebar();
+        loadDiff();
     }});
 }}
 
@@ -235,15 +264,28 @@ function renderSidebar() {{
         return;
     }}
     list.innerHTML = annotations.map((a, i) => {{
-        const typeIcon = a.type === 'media' ? '🖼' : a.type === 'block' ? '¶' : '✎';
+        const typeIcon = a.type === 'media' ? '🖼' : a.type === 'block' ? '¶'
+            : a.type === 'change' ? '±' : '✎';
+        const open = a.type === 'change'
+            ? `goToChunk('${{a.chunkKey}}')`
+            : `scrollToAnnotation(${{i}})`;
         return `
-        <div class="annotation-card" onclick="scrollToAnnotation(${{i}})">
+        <div class="annotation-card" onclick="${{open}}">
             <span class="delete-btn" onclick="event.stopPropagation(); deleteAnnotation(${{i}})">delete</span>
             <span class="idx">${{typeIcon}} #${{i + 1}}</span>
             <span class="highlighted">${{escapeHtml(truncate(a.text, 100))}}</span>
             <div class="note">${{escapeHtml(a.note)}}</div>
         </div>`;
     }}).join('');
+}}
+
+function goToChunk(key) {{
+    if (!diffMode) toggleChanges();
+    setTimeout(function() {{
+        const seg = diffSegments.find(s => s.type === 'hunk' && s.key === key);
+        const el = seg && document.getElementById('hunk-' + seg.idx);
+        if (el) el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+    }}, 300);
 }}
 
 function scrollToAnnotation(idx) {{
@@ -277,7 +319,10 @@ function highlightAnnotations() {{
     const content = document.getElementById('content');
 
     annotations.forEach((annotation, idx) => {{
-        if (annotation.type === 'media') {{
+        if (annotation.type === 'change') {{
+            // Lives in the Changes view, not in the rendered document.
+            return;
+        }} else if (annotation.type === 'media') {{
             // Find media by src
             const src = annotation.src || '';
             const el = content.querySelector(`img[src="${{src}}"], video[src="${{src}}"]`);
@@ -331,6 +376,7 @@ function highlightAnnotations() {{
 // --- Change review (PR-style diff against the baseline snapshot) ---
 let diffMode = false;
 let lastMtime = null;
+let diffSegments = [];
 
 function toggleChanges() {{
     diffMode = !diffMode;
@@ -342,11 +388,47 @@ function toggleChanges() {{
 }}
 
 function loadDiff() {{
-    fetch('/api/diff').then(r => r.json()).then(data => {{
+    // Comments live in the annotations file, so pull both together.
+    Promise.all([
+        fetch('/api/diff').then(r => r.json()),
+        fetch('/api/annotations').then(r => r.json()),
+    ]).then(([data, notes]) => {{
+        annotations = notes;
         lastMtime = data.mtime;
+        diffSegments = data.segments;
+        updateCount();
         updateDiffCount(data.count);
         renderDiff(data);
     }});
+}}
+
+function commentOnChunk(idx) {{
+    const seg = diffSegments.find(s => s.type === 'hunk' && s.idx === idx);
+    if (!seg) return;
+    const body = seg.new_text || seg.old_text || '';
+
+    pendingSelection = {{
+        text: '[change] ' + (body.length > 120 ? body.substring(0, 120) + '...' : body),
+        type: 'change',
+        chunkKey: seg.key,
+        chunkIdx: idx,
+        before: seg.old_text,
+        after: seg.new_text,
+    }};
+
+    const el = document.getElementById('hunk-' + idx);
+    showPopup(
+        el.getBoundingClientRect(),
+        'What should be different about this change?',
+        body.length > 150 ? body.substring(0, 150) + '...' : body
+    );
+    document.getElementById('popup-accept').style.display = 'inline-block';
+}}
+
+function chunkComments(key) {{
+    return annotations
+        .map((a, i) => ({{ a: a, i: i }}))
+        .filter(x => x.a.type === 'change' && x.a.chunkKey === key);
 }}
 
 function updateDiffCount(count) {{
@@ -380,16 +462,29 @@ function renderDiff(data) {{
         if (seg.new_html) {{
             sides += '<div class="side side-new"><span class="side-tag">+ after</span>' + seg.new_html + '</div>';
         }}
+
+        const comments = chunkComments(seg.key);
+        const thread = comments.length === 0 ? '' : `
+            <div class="hunk-comments">
+                ${{comments.map(c => `
+                <div class="hunk-comment">
+                    <span class="comment-del" onclick="deleteComment(${{c.i}})">delete</span>
+                    ${{escapeHtml(c.a.note)}}
+                </div>`).join('')}}
+            </div>`;
+
         return `
-        <div class="hunk" id="hunk-${{seg.idx}}">
+        <div class="hunk${{comments.length ? ' has-comments' : ''}}" id="hunk-${{seg.idx}}">
             <div class="hunk-bar">
-                <span class="hunk-label">${{label}} · chunk ${{n}}</span>
+                <span class="hunk-label">${{label}} · chunk ${{n}}${{comments.length ? ' · ' + comments.length + ' comment' + (comments.length === 1 ? '' : 's') : ''}}</span>
                 <span>
+                    <button class="btn-comment" onclick="commentOnChunk(${{seg.idx}})">Comment</button>
                     <button class="btn-reject" onclick="resolveHunk(${{seg.idx}}, 'reject')">Reject</button>
                     <button class="btn-accept" onclick="resolveHunk(${{seg.idx}}, 'accept')">Accept</button>
                 </span>
             </div>
             ${{sides}}
+            ${{thread}}
         </div>`;
     }}).join('');
 }}
@@ -696,6 +791,31 @@ body {
 .hunk-bar .btn-accept:hover { background: #1c8139; }
 .hunk-bar .btn-reject { color: #cf222e; }
 .hunk-bar .btn-reject:hover { background: #ffebe9; border-color: #cf222e; }
+.hunk-bar .btn-comment { color: #0969da; }
+.hunk-bar .btn-comment:hover { background: #ddf4ff; border-color: #0969da; }
+
+.hunk.has-comments { border-color: #0969da; }
+.hunk.has-comments .hunk-bar { background: #ddf4ff; border-bottom-color: #0969da; }
+.hunk.has-comments .hunk-label { color: #0969da; }
+
+.hunk-comments { border-top: 1px solid #d0d7de; background: #f6f8fa; padding: 4px 12px 10px; }
+
+.hunk-comment {
+    background: white;
+    border: 1px solid #d0d7de;
+    border-left: 3px solid #0969da;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-top: 8px;
+    font-size: 13px;
+    color: #24292e;
+}
+
+.hunk-comment .comment-del { float: right; color: #cf222e; cursor: pointer; font-size: 11px; opacity: 0.6; }
+.hunk-comment .comment-del:hover { opacity: 1; }
+
+#note-popup .btn-save-accept { display: none; background: #1a7f37; color: white; border: none; }
+#note-popup .btn-save-accept:hover { background: #1c8139; }
 
 .side { position: relative; padding: 14px 18px 14px 20px; }
 .side > *:first-child { margin-top: 0; }
